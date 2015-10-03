@@ -1,4 +1,6 @@
-﻿using System;
+namespace dravenplus
+{
+    using System;
 using System.Collections.Generic;
 using System.Linq;
 using SharpDX;
@@ -11,488 +13,655 @@ using EloBuddy.SDK.Menu.Values;
 using EloBuddy.SDK.Rendering;
 using Color = System.Drawing.Color;
 
-namespace DravenPlus
-{
-    internal class Draven
+    internal class DravenPlus
     {
-        private static int AxeCount
+        #region Public Properties
+
+        /// <summary>
+        ///     Gets or sets the e.
+        /// </summary>
+        /// <value>
+        ///     The e.
+        /// </value>
+        public Spell E { get; set; }
+
+        /// <summary>
+        ///     Gets the mana percent.
+        /// </summary>
+        /// <value>
+        ///     The mana percent.
+        /// </value>
+        public float ManaPercent
         {
             get
             {
-                const string buffName = "dravenspinningattack";
-                if (Player.HasBuff(buffName))
+                return this.Player.Mana / this.Player.MaxMana * 100;
+            }
+        }
+
+        /// <summary>
+        ///     Gets or sets the menu.
+        /// </summary>
+        /// <value>
+        ///     The menu.
+        /// </value>
+        public Menu Menu { get; set; }
+
+        /// <summary>
+        ///     Gets or sets the orbwalker.
+        /// </summary>
+        /// <value>
+        ///     The orbwalker.
+        /// </value>
+        public Orbwalking.Orbwalker Orbwalker { get; set; }
+
+        /// <summary>
+        ///     Gets the player.
+        /// </summary>
+        /// <value>
+        ///     The player.
+        /// </value>
+        public Obj_AI_Hero Player
+        {
+            get
+            {
+                return ObjectManager.Player;
+            }
+        }
+
+        /// <summary>
+        ///     Gets or sets the q.
+        /// </summary>
+        /// <value>
+        ///     The q.
+        /// </value>
+        public Spell Q { get; set; }
+
+        /// <summary>
+        ///     Gets the q count.
+        /// </summary>
+        /// <value>
+        ///     The q count.
+        /// </value>
+        public int QCount
+        {
+            get
+            {
+                return (this.Player.HasBuff("dravenspinningattack")
+                            ? this.Player.Buffs.First(x => x.Name == "dravenspinningattack").Count
+                            : 0) + this.QReticles.Count;
+            }
+        }
+
+        /// <summary>
+        ///     Gets or sets the q reticles.
+        /// </summary>
+        /// <value>
+        ///     The q reticles.
+        /// </value>
+        public List<QRecticle> QReticles { get; set; }
+
+        /// <summary>
+        ///     Gets or sets the r.
+        /// </summary>
+        /// <value>
+        ///     The r.
+        /// </value>
+        public Spell R { get; set; }
+
+        /// <summary>
+        ///     Gets or sets the w.
+        /// </summary>
+        /// <value>
+        ///     The w.
+        /// </value>
+        public Spell W { get; set; }
+
+        #endregion
+
+        #region Properties
+
+        /// <summary>
+        ///     Gets or sets the last axe move time.
+        /// </summary>
+        private int LastAxeMoveTime { get; set; }
+
+        #endregion
+
+        #region Public Methods and Operators
+
+        /// <summary>
+        ///     Loads this instance.
+        /// </summary>
+        public void Load()
+        {
+            // Create spells
+            this.Q = new Spell(SpellSlot.Q, Orbwalking.GetRealAutoAttackRange(this.Player));
+            this.W = new Spell(SpellSlot.W);
+            this.E = new Spell(SpellSlot.E, 1050);
+            this.R = new Spell(SpellSlot.R);
+
+            this.E.SetSkillshot(0.25f, 130, 1400, false, SkillshotType.SkillshotLine);
+            this.R.SetSkillshot(0.4f, 160, 2000, true, SkillshotType.SkillshotLine);
+
+            this.QReticles = new List<QRecticle>();
+
+            this.CreateMenu();
+
+            Game.PrintChat("<font color=\"#7CFC00\"><b>MoonDraven:</b></font> Loaded");
+
+            //Obj_AI_Base.OnNewPath += this.Obj_AI_Base_OnNewPath;
+            GameObject.OnCreate += this.GameObjectOnOnCreate;
+            GameObject.OnDelete += this.GameObjectOnOnDelete;
+            AntiGapcloser.OnEnemyGapcloser += this.AntiGapcloserOnOnEnemyGapcloser;
+            Interrupter2.OnInterruptableTarget += this.Interrupter2OnOnInterruptableTarget;
+            Drawing.OnDraw += this.DrawingOnOnDraw;
+            Game.OnUpdate += this.GameOnOnUpdate;
+        }
+
+        #endregion
+
+        #region Methods
+
+        /// <summary>
+        ///     Called on an enemy gapcloser.
+        /// </summary>
+        /// <param name="gapcloser">The gapcloser.</param>
+        private void AntiGapcloserOnOnEnemyGapcloser(ActiveGapcloser gapcloser)
+        {
+            if (!this.Menu.Item("UseEGapcloser").IsActive() || !this.E.IsReady()
+                || !gapcloser.Sender.IsValidTarget(this.E.Range))
+            {
+                return;
+            }
+
+            this.E.Cast(gapcloser.Sender);
+        }
+
+        /// <summary>
+        ///     Catches the axe.
+        /// </summary>
+        private void CatchAxe()
+        {
+            var catchOption = this.Menu.Item("AxeMode").GetValue<StringList>().SelectedIndex;
+
+            if (((catchOption == 0 && this.Orbwalker.ActiveMode == Orbwalking.OrbwalkingMode.Combo)
+                 || (catchOption == 1 && this.Orbwalker.ActiveMode != Orbwalking.OrbwalkingMode.None))
+                || catchOption == 2)
+            {
+                var bestReticle =
+                    this.QReticles.Where(
+                        x =>
+                        x.Object.Position.Distance(Game.CursorPos)
+                        < this.Menu.Item("CatchAxeRange").GetValue<Slider>().Value)
+                        .OrderBy(x => x.Position.Distance(this.Player.ServerPosition))
+                        .ThenBy(x => x.Position.Distance(Game.CursorPos))
+                        .ThenBy(x => x.ExpireTime)
+                        .FirstOrDefault();
+
+                if (bestReticle != null && bestReticle.Object.Position.Distance(this.Player.ServerPosition) > 100)
                 {
-                    return Player.Instance.Buffs.First(x => x.Name == buffName).Count + Axes.Count;
-                }
+                    var eta = 1000 * (this.Player.Distance(bestReticle.Position) / this.Player.MoveSpeed);
+                    var expireTime = bestReticle.ExpireTime - Environment.TickCount;
 
-                return 0;
-            }
-        }
-
-        private static List<Axe> Axes { get; set; }
-
-        private static Spell.Active Q { get; set; }
-
-        private static Spell.Active W { get; set; }
-
-        private static Spell.Skillshot E { get; set; }
-
-        private static Spell.Skillshot R { get; set; }
-
-        private static Circle AxeCatchRange { get; set; }
-
-        private static Circle AxeLocation { get; set; }
-
-        private static Circle ERange { get; set; }
-
-        private static Menu DravenMenu { get; set; }
-
-        private static readonly Dictionary<SubMenus, Menu> GetSubMenu = new Dictionary<SubMenus, Menu>(); 
-
-        private static float LastAxeCatch { get; set; }
-
-
-        public static void OnLoad()
-        {
-            if (Player.Instance.ChampionName != "Draven")
-            {
-                return;
-            }
-
-            Q = new Spell.Active(SpellSlot.Q);
-            W = new Spell.Active(SpellSlot.W);
-            E = new Spell.Skillshot(SpellSlot.E, 1050, SkillShotType.Linear, 250, 1400, 130);
-            R = new Spell.Skillshot(SpellSlot.R, 20000, SkillShotType.Linear, 400, 2000, 160);
-
-            AxeCatchRange = new Circle();
-            AxeLocation = new Circle();
-            ERange = new Circle();
-
-            Axes = new List<Axe>();
-
-            CreateMenu();
-
-            GameObject.OnCreate += GameObjectOnOnCreate;
-            GameObject.OnDelete += GameObjectOnOnDelete;
-            Interrupter.OnInterruptableSpell += InterrupterOnOnInterruptableSpell;
-            Orbwalker.OnPreAttack += OrbwalkerOnOnPreAttack;
-            Gapcloser.OnGapcloser += GapcloserOnOnGapcloser;
-            Drawing.OnDraw += DrawingOnOnDraw;
-            Game.OnTick += args =>
-            {
-                CatchAxe();
-                Harass();
-                LaneClear();
-                Combo();
-            };
-        }
-
-        private static void CreateMenu()
-        {
-            DravenMenu = MainMenu.AddMenu("Draven+", "dravenplus");
-
-            var comboMenu = DravenMenu.AddSubMenu("Combo", "dravenplus.combo");
-            comboMenu.AddGroupLabel("Combo");
-            comboMenu.Add("dravenplus.combo.useq", new CheckBox("Use Q"));
-            comboMenu.Add("dravenplus.combo.usew", new CheckBox("Use W"));
-            comboMenu.Add("dravenplus.combo.usee", new CheckBox("Use E"));
-            comboMenu.Add("dravenplus.combo.user", new CheckBox("Use R"));
-            GetSubMenu.Add(SubMenus.Combo, comboMenu);
-
-            var harassMenu = DravenMenu.AddSubMenu("Harass", "dravenplus.harass");
-            harassMenu.AddGroupLabel("Harass");
-            harassMenu.Add("dravenplus.harass.usee", new CheckBox("Use E"));
-            harassMenu.Add("dravenplus.harass.mana", new Slider("Minimum Mana%", 30));
-            GetSubMenu.Add(SubMenus.Harass, harassMenu);
-
-            var clearMenu = DravenMenu.AddSubMenu("MinionClear", "dravenplus.clear");
-            clearMenu.AddGroupLabel("MinionClear");
-            clearMenu.Add("dravenplus.clear.useq", new CheckBox("Use Q"));
-            clearMenu.Add("dravenplus.clear.usew", new CheckBox("Use W"));
-            //clearMenu.Add("dravenplus.clear.usee", new CheckBox("Use E")); //todo need linefarmloc
-            clearMenu.Add("dravenplus.clear.mana", new Slider("Minimum Mana%", 30));
-            GetSubMenu.Add(SubMenus.LaneClear, clearMenu);
-
-            var axeMenu = DravenMenu.AddSubMenu("Axe Settings", "dravenplus.axe");
-            axeMenu.Add("dravenplus.axe.usew", new CheckBox("Use W if necessary"));
-            axeMenu.Add("dravenplus.axe.undertower", new CheckBox("Do not Catch under Tower"));
-            axeMenu.Add("dravenplus.axe.maxaxe", new Slider("Maximum Axes", 2, 1, 3));
-            axeMenu.Add("dravenplus.axe.catchrange", new Slider("Catch Range", 800, 120, 1500));
-            axeMenu.AddLabel("Catch Axes if:");
-            var mode = axeMenu.Add("dravenplus.axe.mode", new Slider("Orbwalking", 1, 0, 2));
-            mode.OnValueChange += (sender, args) =>
-            {
-                switch (args.NewValue)
-                {
-                    case 0:
-                        {
-                            mode.DisplayName = "Combo";
-                            break;
-                        }
-                    case 1:
-                        {
-                            mode.DisplayName = "Orbwalking";
-                            break;
-                        }
-                    case 2:
-                        {
-                            mode.DisplayName = "Always";
-                            break;
-                        }
-                }
-            };
-            GetSubMenu.Add(SubMenus.AxeSettings, axeMenu);
-
-            var drawingMenu = DravenMenu.AddSubMenu("Drawings", "dravenplus.draw");
-            drawingMenu.AddGroupLabel("Drawings");
-            drawingMenu.Add("dravenplus.draw.e", new CheckBox("Draw E"));
-            drawingMenu.Add("dravenplus.draw.axe", new CheckBox("Draw Axes"));
-            drawingMenu.Add("dravenplus.draw.catchrange", new CheckBox("Draw Catch Range"));
-            GetSubMenu.Add(SubMenus.Drawings, drawingMenu);
-
-            var otherMenu = DravenMenu.AddSubMenu("Other", "dravenplus.other");
-            otherMenu.AddGroupLabel("Other");
-            otherMenu.Add("dravenplus.other.antigap", new CheckBox("Use E as AntiGapCloser"));
-            otherMenu.Add("dravenplus.other.interrupter", new CheckBox("Use E as Interrupter"));
-            GetSubMenu.Add(SubMenus.Other, otherMenu);
-        }
-
-        private static void OrbwalkerOnOnPreAttack(AttackableUnit target, Orbwalker.PreAttackArgs args)
-        {
-            if (!Q.IsReady())
-            {
-                return;
-            }
-
-            if (Orbwalker.ActiveModesFlags.HasFlag(Orbwalker.ActiveModes.Combo))
-            {
-                if (GetSubMenu[SubMenus.Combo]["dravenplus.combo.useq"].Cast<CheckBox>().CurrentValue &&
-                    AxeCount < GetSubMenu[SubMenus.AxeSettings]["dravenplus.axe.maxaxe"].Cast<Slider>().CurrentValue &&
-                    target is AIHeroClient)
-                {
-                    Q.Cast();
-                }
-            }
-
-            if (Orbwalker.ActiveModesFlags.HasFlag(Orbwalker.ActiveModes.LaneClear) || Orbwalker.ActiveModesFlags.HasFlag(Orbwalker.ActiveModes.JungleClear))
-            {
-                if (Player.Instance.ManaPercent < GetSubMenu[SubMenus.LaneClear]["dravenplus.clear.mana"].Cast<Slider>().CurrentValue)
-                {
-                    return;
-                }
-
-                if (GetSubMenu[SubMenus.LaneClear]["dravenplus.clear.useq"].Cast<CheckBox>().CurrentValue &&
-                    AxeCount < GetSubMenu[SubMenus.AxeSettings]["dravenplus.axe.maxaxe"].Cast<Slider>().CurrentValue &&
-                    (target as Obj_AI_Base).IsMinion)
-                {
-                    Q.Cast();
-                }
-            }
-        }
-
-        private static void InterrupterOnOnInterruptableSpell(Obj_AI_Base sender, Interrupter.InterruptableSpellEventArgs interruptableSpellEventArgs)
-        {
-            if (!GetSubMenu[SubMenus.Other]["dravenplus.other.interrupter"].Cast<CheckBox>().CurrentValue || 
-                !E.IsReady() || 
-                !sender.IsValidTarget(E.Range))
-            {
-                return;
-            }
-
-            if (interruptableSpellEventArgs.DangerLevel >= DangerLevel.Medium)
-            {
-                E.Cast(sender);
-            }
-        }
-
-        private static void GapcloserOnOnGapcloser(AIHeroClient sender, Gapcloser.GapcloserEventArgs gapcloserEventArgs)
-        {
-            if (!GetSubMenu[SubMenus.Other]["dravenplus.other.antigap"].Cast<CheckBox>().CurrentValue || 
-                !E.IsReady() || 
-                !sender.IsValidTarget(E.Range))
-            {
-                return;
-            }
-
-            E.Cast(sender);
-        }
-
-        private static void DrawingOnOnDraw(EventArgs args)
-        {
-            if (GetSubMenu[SubMenus.Drawings]["dravenplus.draw.catchrange"].Cast<CheckBox>().CurrentValue)
-            {
-                AxeCatchRange.Color = Color.AntiqueWhite;
-                AxeCatchRange.Radius =
-                    GetSubMenu[SubMenus.AxeSettings]["dravenplus.axe.catchrange"].Cast<Slider>().CurrentValue;
-                AxeCatchRange.Draw(Game.CursorPos);
-            }
-
-            if (GetSubMenu[SubMenus.Drawings]["dravenplus.draw.axe"].Cast<CheckBox>().CurrentValue)
-            {
-                var bestAxe = GetBestAxe;
-
-                if (bestAxe != null)
-                {
-                    AxeLocation.Color = Color.Red;
-                    AxeLocation.Radius = 120;
-                    AxeLocation.Draw(bestAxe.Object.Position);
-                }
-
-                foreach (var axe in Axes.Where(x => x.Object.NetworkId != (bestAxe != null ? bestAxe.Object.NetworkId : 0)))
-                {
-                    AxeLocation.Color = Color.Yellow;
-                    AxeLocation.Radius = 120;
-                    AxeLocation.Draw(axe.Object.Position);
-                }
-            }
-
-            if (GetSubMenu[SubMenus.Drawings]["dravenplus.draw.e"].Cast<CheckBox>().CurrentValue)
-            {
-                ERange.Color = Color.AntiqueWhite;
-                ERange.Radius = E.Range;
-                ERange.Draw(Player.Instance.Position);
-            }
-        }
-
-        private static void GameObjectOnOnCreate(GameObject sender, EventArgs args)
-        {
-            if (!sender.Name.Contains("Draven_Base_Q_reticle_self.troy"))
-            {
-                return;
-            }
-
-            Axes.Add(new Axe
-            {
-                Object = sender,
-                ExpireTime = Game.Time + 1.8
-            });
-
-            Core.DelayAction(() => Axes.RemoveAll(x => x.Object.NetworkId == sender.NetworkId), 1800);
-        }
-
-        private static void GameObjectOnOnDelete(GameObject sender, EventArgs args)
-        {
-            if (!sender.Name.Contains("Draven_Base_Q_reticle_self.troy"))
-            {
-                return;
-            }
-
-            Axes.RemoveAll(x => x.Object.NetworkId == sender.NetworkId);
-        }
-
-        private static void Combo()
-        {
-            if (!Orbwalker.ActiveModesFlags.HasFlag(Orbwalker.ActiveModes.Combo))
-            {
-                return;
-            }
-
-            var target = TargetSelector.GetTarget(E.Range, DamageType.Physical);
-
-            if (!target.IsValidTarget())
-            {
-                return;
-            }
-
-            if (GetSubMenu[SubMenus.Combo]["dravenplus.combo.usew"].Cast<CheckBox>().CurrentValue &&
-                W.IsReady() &&
-                !Player.HasBuff("dravenfurybuff"))
-            {
-
-                W.Cast();
-            }
-
-            if (GetSubMenu[SubMenus.Combo]["dravenplus.combo.usee"].Cast<CheckBox>().CurrentValue
-                && E.IsReady())
-            {
-                E.Cast(target);
-            }
-
-            if (GetSubMenu[SubMenus.Combo]["dravenplus.combo.user"].Cast<CheckBox>().CurrentValue &&
-                R.IsReady())
-            {
-                var targetR =
-                    HeroManager.Enemies.Where(h => h.IsValidTarget(2000))
-                        .FirstOrDefault(
-                            h =>
-                                GetSpellDamage(h, SpellSlot.R) * 2 > h.Health
-                                &&
-                                (!Player.Instance.IsInAutoAttackRange(h) ||
-                                 Player.Instance.CountEnemiesInRange(E.Range) > 2));
-
-                if (targetR != null)
-                {
-                    R.Cast(targetR);
-                }
-            }
-        }
-
-        private static void Harass()
-        {
-            if (!Orbwalker.ActiveModesFlags.HasFlag(Orbwalker.ActiveModes.Harass))
-            {
-                return;
-            }
-
-            if (Player.Instance.ManaPercent < GetSubMenu[SubMenus.Harass]["dravenplus.harass.mana"].Cast<Slider>().CurrentValue)
-            {
-                return;
-            }
-
-            var target = TargetSelector.GetTarget(E.Range, DamageType.Physical);
-
-            if (!target.IsValidTarget())
-            {
-                return;
-            }
-
-            if (GetSubMenu[SubMenus.Harass]["dravenplus.harass.usee"].Cast<CheckBox>().CurrentValue && 
-                E.IsReady())
-            {
-                E.Cast(target);
-            }
-        }
-
-        private static void LaneClear()
-        {
-            if (!Orbwalker.ActiveModesFlags.HasFlag(Orbwalker.ActiveModes.LaneClear) && !Orbwalker.ActiveModesFlags.HasFlag(Orbwalker.ActiveModes.JungleClear))
-            {
-                return;
-            }
-
-            if (Player.Instance.ManaPercent < GetSubMenu[SubMenus.LaneClear]["dravenplus.clear.mana"].Cast<Slider>().CurrentValue)
-            {
-                return;
-            }
-
-            if (GetSubMenu[SubMenus.LaneClear]["dravenplus.clear.usew"].Cast<CheckBox>().CurrentValue && 
-                W.IsReady() &&
-                !Player.HasBuff("dravenfurybuff"))
-            {
-                W.Cast();
-            }
-        }
-
-        private static void CatchAxe()
-        {
-            var mode = GetSubMenu[SubMenus.AxeSettings]["dravenplus.axe.mode"].Cast<Slider>().CurrentValue;
-            if (mode == 0 && !Orbwalker.ActiveModesFlags.HasFlag(Orbwalker.ActiveModes.Combo))
-            {
-                return;
-            }
-            if (mode == 1 && Orbwalker.ActiveModesFlags == Orbwalker.ActiveModes.None)
-            {
-                return;
-            }
-
-            if (Game.Time - LastAxeCatch < 0.05)
-            {
-                return;
-            }
-
-            var bestAxe = GetBestAxe;
-
-            if (bestAxe != null && bestAxe.Object.Position.Distance(Player.Instance.ServerPosition) > 110)
-            {
-                var catchTime = Player.Instance.Distance(bestAxe.Object.Position)/Player.Instance.MoveSpeed;
-                var expireTime = bestAxe.ExpireTime - Game.Time;
-
-                if (catchTime >= expireTime &&
-                    GetSubMenu[SubMenus.AxeSettings]["dravenplus.axe.usew"].Cast<CheckBox>().CurrentValue)
-                {
-                    W.Cast();
-                }
-
-                if (GetSubMenu[SubMenus.AxeSettings]["dravenplus.axe.undertower"].Cast<CheckBox>().CurrentValue)
-                {
-                    if (IsUnderTurret(Player.Instance.ServerPosition) && IsUnderTurret(bestAxe.Object.Position))
+                    if (eta >= expireTime && this.Menu.Item("UseWForQ").IsActive())
                     {
-                        LastAxeCatch = Game.Time;
-
-                        Orbwalker.OrbwalkTo(bestAxe.Object.Position);
+                        this.W.Cast();
                     }
-                    else if (!IsUnderTurret(bestAxe.Object.Position))
-                    {
-                        LastAxeCatch = Game.Time;
 
-                        Orbwalker.OrbwalkTo(bestAxe.Object.Position);
+                    if (this.Menu.Item("DontCatchUnderTurret").IsActive())
+                    {
+                        // If we're under the turret as well as the axe, catch the axe
+                        if (this.Player.UnderTurret(true) && bestReticle.Object.Position.UnderTurret(true))
+                        {
+                            if (this.Orbwalker.ActiveMode == Orbwalking.OrbwalkingMode.None)
+                            {
+                                this.Player.IssueOrder(GameObjectOrder.MoveTo, bestReticle.Position);
+                            }
+                            else
+                            {
+                                this.Orbwalker.SetOrbwalkingPoint(bestReticle.Position);
+                            }
+                        }
+                        else if (!bestReticle.Position.UnderTurret(true))
+                        {
+                            if (this.Orbwalker.ActiveMode == Orbwalking.OrbwalkingMode.None)
+                            {
+                                this.Player.IssueOrder(GameObjectOrder.MoveTo, bestReticle.Position);
+                            }
+                            else
+                            {
+                                this.Orbwalker.SetOrbwalkingPoint(bestReticle.Position);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (this.Orbwalker.ActiveMode == Orbwalking.OrbwalkingMode.None)
+                        {
+                            this.Player.IssueOrder(GameObjectOrder.MoveTo, bestReticle.Position);
+                        }
+                        else
+                        {
+                            this.Orbwalker.SetOrbwalkingPoint(bestReticle.Position);
+                        }
                     }
                 }
                 else
                 {
-                    LastAxeCatch = Game.Time;
-
-                    Orbwalker.OrbwalkTo(bestAxe.Object.Position);
+                    this.Orbwalker.SetOrbwalkingPoint(Game.CursorPos);
                 }
             }
             else
             {
-                Orbwalker.OrbwalkTo(Game.CursorPos);
+                this.Orbwalker.SetOrbwalkingPoint(Game.CursorPos);
             }
         }
 
-        private static float GetSpellDamage(Obj_AI_Base target, SpellSlot slot)
+        /// <summary>
+        ///     Does the combo.
+        /// </summary>
+        private void Combo()
         {
-            var level = Player.GetSpell(slot).Level - 1;
-            switch (slot)
+            var target = TargetSelector.GetTarget(this.E.Range, TargetSelector.DamageType.Physical);
+
+            if (!target.IsValidTarget())
             {
-                case SpellSlot.Q:
-                {
-                    var damage = new float[] {45, 55, 65, 75, 85}[level]/100*
-                                 (Player.Instance.BaseAttackDamage + Player.Instance.FlatPhysicalDamageMod);
-                    return Damage.CalculateDamageOnUnit(Player.Instance, target, DamageType.Physical, damage);
-                }
-                case SpellSlot.E:
-                {
-                    var damage = new float[] { 70, 105, 140, 175, 210 }[level] + (float)(0.5 * Player.Instance.FlatPhysicalDamageMod);
-                    return Damage.CalculateDamageOnUnit(Player.Instance, target, DamageType.Physical, damage);
-                }
-                case SpellSlot.R:
-                {
-                    var damage = new float[] { 175, 275, 375 }[level] + (float)(1.1 * Player.Instance.FlatPhysicalDamageMod);
-                    return Damage.CalculateDamageOnUnit(Player.Instance, target, DamageType.Physical, damage);
-                }
+                return;
             }
 
-            return 0;
-        }
+            var useQ = this.Menu.Item("UseQCombo").IsActive();
+            var useW = this.Menu.Item("UseWCombo").IsActive();
+            var useE = this.Menu.Item("UseECombo").IsActive();
+            var useR = this.Menu.Item("UseRCombo").IsActive();
 
-        private static Axe GetBestAxe
-        {
-            get
+            if (useQ && this.QCount < this.Menu.Item("MaxAxes").GetValue<Slider>().Value - 1 && this.Q.IsReady()
+                && this.Orbwalker.InAutoAttackRange(target) && !this.Player.Spellbook.IsAutoAttacking)
             {
-                return
-                    Axes.Where(
-                        h =>
-                            h.Object.Position.Distance(Game.CursorPos) <=
-                            GetSubMenu[SubMenus.AxeSettings]["dravenplus.axe.catchrange"].Cast<Slider>().CurrentValue)
-                        .
-                        OrderBy(h => h.Object.Position.Distance(Player.Instance.ServerPosition)).
-                        ThenBy(x => x.Object.Distance(Game.CursorPos)).
-                        FirstOrDefault();
+                this.Q.Cast();
+            }
+
+            if (useW && this.W.IsReady()
+                && this.ManaPercent > this.Menu.Item("UseWManaPercent").GetValue<Slider>().Value)
+            {
+                if (this.Menu.Item("UseWSetting").IsActive())
+                {
+                    this.W.Cast();
+                }
+                else
+                {
+                    if (!this.Player.HasBuff("dravenfurybuff"))
+                    {
+                        this.W.Cast();
+                    }
+                }
+            }
+
+            if (useE && this.E.IsReady())
+            {
+                this.E.Cast(target);
+            }
+
+            if (!useR || !this.R.IsReady())
+            {
+                return;
+            }
+
+            // Patented Advanced Algorithms D321987
+            var killableTarget =
+                HeroManager.Enemies.Where(x => x.IsValidTarget(2000))
+                    .FirstOrDefault(
+                        x =>
+                        this.Player.GetSpellDamage(x, SpellSlot.R) * 2 > x.Health
+                        && (!this.Orbwalker.InAutoAttackRange(x) || this.Player.CountEnemiesInRange(this.E.Range) > 2));
+
+            if (killableTarget != null)
+            {
+                this.R.Cast(killableTarget);
             }
         }
 
-        public static bool IsUnderTurret(Vector3 position)
+        /// <summary>
+        ///     Creates the menu.
+        /// </summary>
+        private void CreateMenu()
         {
-            return ObjectManager.Get<Obj_AI_Turret>().Any(turret => turret.IsValidTarget(950) && turret.IsEnemy);
+            this.Menu = new Menu("MoonDraven", "cmMoonDraven", true);
+
+            // Target Selector
+            var tsMenu = new Menu("Target Selector", "ts");
+            TargetSelector.AddToMenu(tsMenu);
+            this.Menu.AddSubMenu(tsMenu);
+
+            // Orbwalker
+            var orbwalkMenu = new Menu("Orbwalker", "orbwalker");
+            this.Orbwalker = new Orbwalking.Orbwalker(orbwalkMenu);
+            this.Menu.AddSubMenu(orbwalkMenu);
+
+            // Combo
+            var comboMenu = new Menu("Combo", "combo");
+            comboMenu.AddItem(new MenuItem("UseQCombo", "Use Q").SetValue(true));
+            comboMenu.AddItem(new MenuItem("UseWCombo", "Use W").SetValue(true));
+            comboMenu.AddItem(new MenuItem("UseECombo", "Use E").SetValue(true));
+            comboMenu.AddItem(new MenuItem("UseRCombo", "Use R").SetValue(true));
+            this.Menu.AddSubMenu(comboMenu);
+
+            // Harass
+            var harassMenu = new Menu("Harass", "harass");
+            harassMenu.AddItem(new MenuItem("UseEHarass", "Use E").SetValue(true));
+            harassMenu.AddItem(
+                new MenuItem("UseHarassToggle", "Harass! (Toggle)").SetValue(new KeyBind(84, KeyBindType.Toggle)));
+            this.Menu.AddSubMenu(harassMenu);
+
+            // Lane Clear
+            var laneClearMenu = new Menu("Wave Clear", "waveclear");
+            laneClearMenu.AddItem(new MenuItem("UseQWaveClear", "Use Q").SetValue(true));
+            laneClearMenu.AddItem(new MenuItem("UseWWaveClear", "Use W").SetValue(true));
+            laneClearMenu.AddItem(new MenuItem("UseEWaveClear", "Use E").SetValue(false));
+            laneClearMenu.AddItem(new MenuItem("WaveClearManaPercent", "Mana Percent").SetValue(new Slider(50)));
+            this.Menu.AddSubMenu(laneClearMenu);
+
+            // Axe Menu
+            var axeMenu = new Menu("Axe Settings", "axeSetting");
+            axeMenu.AddItem(
+                new MenuItem("AxeMode", "Catch Axe on Mode:").SetValue(
+                    new StringList(new[] { "Combo", "Any", "Always" }, 2)));
+            axeMenu.AddItem(new MenuItem("CatchAxeRange", "Catch Axe Range").SetValue(new Slider(800, 120, 1500)));
+            axeMenu.AddItem(new MenuItem("MaxAxes", "Maximum Axes").SetValue(new Slider(2, 1, 3)));
+            axeMenu.AddItem(new MenuItem("UseWForQ", "Use W if Axe too far").SetValue(true));
+            axeMenu.AddItem(new MenuItem("DontCatchUnderTurret", "Don't Catch Axe Under Turret").SetValue(true));
+            this.Menu.AddSubMenu(axeMenu);
+
+            // Drawing
+            var drawMenu = new Menu("Drawing", "draw");
+            drawMenu.AddItem(new MenuItem("DrawE", "Draw E").SetValue(true));
+            drawMenu.AddItem(new MenuItem("DrawAxeLocation", "Draw Axe Location").SetValue(true));
+            drawMenu.AddItem(new MenuItem("DrawAxeRange", "Draw Axe Catch Range").SetValue(true));
+            this.Menu.AddSubMenu(drawMenu);
+
+            // Misc Menu
+            var miscMenu = new Menu("Misc", "misc");
+            miscMenu.AddItem(new MenuItem("UseWSetting", "Use W Instantly(When Available)").SetValue(false));
+            miscMenu.AddItem(new MenuItem("UseEGapcloser", "Use E on Gapcloser").SetValue(true));
+            miscMenu.AddItem(new MenuItem("UseEInterrupt", "Use E to Interrupt").SetValue(true));
+            miscMenu.AddItem(new MenuItem("UseWManaPercent", "Use W Mana Percent").SetValue(new Slider(50)));
+            miscMenu.AddItem(new MenuItem("UseWSlow", "Use W if Slowed").SetValue(true));
+            this.Menu.AddSubMenu(miscMenu);
+
+            this.Menu.AddToMainMenu();
         }
 
-        public class Axe
+        /// <summary>
+        ///     Called when the game draws itself.
+        /// </summary>
+        /// <param name="args">The <see cref="EventArgs" /> instance containing the event data.</param>
+        private void DrawingOnOnDraw(EventArgs args)
         {
-            public double ExpireTime { get; set; }
+            var drawE = this.Menu.Item("DrawE").IsActive();
+            var drawAxeLocation = this.Menu.Item("DrawAxeLocation").IsActive();
+            var drawAxeRange = this.Menu.Item("DrawAxeRange").IsActive();
 
+            if (drawE)
+            {
+                Render.Circle.DrawCircle(
+                    ObjectManager.Player.Position,
+                    this.E.Range,
+                    this.E.IsReady() ? Color.Aqua : Color.Red);
+            }
+
+            if (drawAxeLocation)
+            {
+                var bestAxe =
+                    this.QReticles.Where(
+                        x =>
+                        x.Position.Distance(Game.CursorPos) < this.Menu.Item("CatchAxeRange").GetValue<Slider>().Value)
+                        .OrderBy(x => x.Position.Distance(this.Player.ServerPosition))
+                        .ThenBy(x => x.Position.Distance(Game.CursorPos))
+                        .FirstOrDefault();
+
+                if (bestAxe != null)
+                {
+                    Render.Circle.DrawCircle(bestAxe.Position, 120, Color.LimeGreen);
+                }
+
+                foreach (var axe in
+                    this.QReticles.Where(x => x.Object.NetworkId != (bestAxe == null ? 0 : bestAxe.Object.NetworkId)))
+                {
+                    Render.Circle.DrawCircle(axe.Position, 120, Color.Yellow);
+                }
+            }
+
+            if (drawAxeRange)
+            {
+                Render.Circle.DrawCircle(
+                    Game.CursorPos,
+                    this.Menu.Item("CatchAxeRange").GetValue<Slider>().Value,
+                    Color.DodgerBlue);
+            }
+        }
+
+        /// <summary>
+        ///     Called when a game object is created.
+        /// </summary>
+        /// <param name="sender">The sender.</param>
+        /// <param name="args">The <see cref="EventArgs" /> instance containing the event data.</param>
+        private void GameObjectOnOnCreate(GameObject sender, EventArgs args)
+        {
+            if (!sender.Name.Contains("Draven_Base_Q_reticle_self.troy"))
+            {
+                return;
+            }
+
+            this.QReticles.Add(new QRecticle(sender, Environment.TickCount + 1800));
+            Utility.DelayAction.Add(1800, () => this.QReticles.RemoveAll(x => x.Object.NetworkId == sender.NetworkId));
+        }
+
+        /// <summary>
+        ///     Called when a game object is deleted.
+        /// </summary>
+        /// <param name="sender">The sender.</param>
+        /// <param name="args">The <see cref="EventArgs" /> instance containing the event data.</param>
+        private void GameObjectOnOnDelete(GameObject sender, EventArgs args)
+        {
+            if (!sender.Name.Contains("Draven_Base_Q_reticle_self.troy"))
+            {
+                return;
+            }
+
+            this.QReticles.RemoveAll(x => x.Object.NetworkId == sender.NetworkId);
+        }
+
+        /// <summary>
+        ///     Called when the game updates.
+        /// </summary>
+        /// <param name="args">The <see cref="EventArgs" /> instance containing the event data.</param>
+        private void GameOnOnUpdate(EventArgs args)
+        {
+            this.QReticles.RemoveAll(x => x.Object.IsDead);
+
+            this.CatchAxe();
+
+            if (this.W.IsReady() && this.Menu.Item("UseWSlow").IsActive() && this.Player.HasBuffOfType(BuffType.Slow))
+            {
+                this.W.Cast();
+            }
+
+            switch (this.Orbwalker.ActiveMode)
+            {
+                case Orbwalking.OrbwalkingMode.Mixed:
+                    this.Harass();
+                    break;
+                case Orbwalking.OrbwalkingMode.LaneClear:
+                    this.LaneClear();
+                    break;
+                case Orbwalking.OrbwalkingMode.Combo:
+                    this.Combo();
+                    break;
+            }
+
+            if (this.Menu.Item("UseHarassToggle").IsActive())
+            {
+                this.Harass();
+            }
+        }
+
+        /// <summary>
+        ///     Harasses the enemy.
+        /// </summary>
+        private void Harass()
+        {
+            var target = TargetSelector.GetTarget(this.E.Range, TargetSelector.DamageType.Physical);
+
+            if (!target.IsValidTarget())
+            {
+                return;
+            }
+
+            if (this.Menu.Item("UseEHarass").IsActive() && this.E.IsReady())
+            {
+                this.E.Cast(target);
+            }
+        }
+
+        /// <summary>
+        ///     Interrupts an interruptable target.
+        /// </summary>
+        /// <param name="sender">The sender.</param>
+        /// <param name="args">The <see cref="Interrupter2.InterruptableTargetEventArgs" /> instance containing the event data.</param>
+        private void Interrupter2OnOnInterruptableTarget(
+            Obj_AI_Hero sender,
+            Interrupter2.InterruptableTargetEventArgs args)
+        {
+            if (!this.Menu.Item("UseEInterrupt").IsActive() || !this.E.IsReady() || !sender.IsValidTarget(this.E.Range))
+            {
+                return;
+            }
+
+            if (args.DangerLevel == Interrupter2.DangerLevel.Medium || args.DangerLevel == Interrupter2.DangerLevel.High)
+            {
+                this.E.Cast(sender);
+            }
+        }
+
+        /// <summary>
+        ///     Clears the lane of minions.
+        /// </summary>
+        private void LaneClear()
+        {
+            var useQ = this.Menu.Item("UseQWaveClear").IsActive();
+            var useW = this.Menu.Item("UseWWaveClear").IsActive();
+            var useE = this.Menu.Item("UseEWaveClear").IsActive();
+
+            if (this.ManaPercent < this.Menu.Item("WaveClearManaPercent").GetValue<Slider>().Value)
+            {
+                return;
+            }
+
+            if (useQ && this.QCount < this.Menu.Item("MaxAxes").GetValue<Slider>().Value - 1 && this.Q.IsReady()
+                && this.Orbwalker.GetTarget() is Obj_AI_Minion && !this.Player.Spellbook.IsAutoAttacking)
+            {
+                this.Q.Cast();
+            }
+
+            if (useW && this.W.IsReady()
+                && this.ManaPercent > this.Menu.Item("UseWManaPercent").GetValue<Slider>().Value)
+            {
+                if (this.Menu.Item("UseWSetting").IsActive())
+                {
+                    this.W.Cast();
+                }
+                else
+                {
+                    if (!this.Player.HasBuff("dravenfurybuff"))
+                    {
+                        this.W.Cast();
+                    }
+                }
+            }
+
+            if (!useE || !this.E.IsReady())
+            {
+                return;
+            }
+
+            var bestLocation = this.E.GetLineFarmLocation(MinionManager.GetMinions(this.E.Range));
+
+            if (bestLocation.MinionsHit > 1)
+            {
+                this.E.Cast(bestLocation.Position);
+            }
+        }
+
+        /// <summary>
+        ///     Fired when the OnNewPath event is called.
+        /// </summary>
+        /// <param name="sender">The sender.</param>
+        /// <param name="args">The <see cref="GameObjectNewPathEventArgs" /> instance containing the event data.</param>
+        private void Obj_AI_Base_OnNewPath(Obj_AI_Base sender, GameObjectNewPathEventArgs args)
+        {
+            if (!sender.IsMe || this.QReticles.Any(x => x.Position.Distance(args.Path.LastOrDefault()) < 110))
+            {
+                return;
+            }
+
+            this.CatchAxe();
+        }
+
+        #endregion
+
+        /// <summary>
+        ///     A represenation of a Q circle on Draven.
+        /// </summary>
+        internal class QRecticle
+        {
+            #region Constructors and Destructors
+
+            /// <summary>
+            ///     Initializes a new instance of the <see cref="QRecticle" /> class.
+            /// </summary>
+            /// <param name="rectice">The rectice.</param>
+            /// <param name="expireTime">The expire time.</param>
+            public QRecticle(GameObject rectice, int expireTime)
+            {
+                this.Object = rectice;
+                this.ExpireTime = expireTime;
+            }
+
+            #endregion
+
+            #region Public Properties
+
+            /// <summary>
+            ///     Gets or sets the expire time.
+            /// </summary>
+            /// <value>
+            ///     The expire time.
+            /// </value>
+            public int ExpireTime { get; set; }
+
+            /// <summary>
+            ///     Gets or sets the object.
+            /// </summary>
+            /// <value>
+            ///     The object.
+            /// </value>
             public GameObject Object { get; set; }
-        }
 
-        enum SubMenus
-        {
-            Combo,
-            LaneClear,
-            Harass,
-            AxeSettings,
-            Drawings,
-            Other
+            /// <summary>
+            ///     Gets the position.
+            /// </summary>
+            /// <value>
+            ///     The position.
+            /// </value>
+            public Vector3 Position
+            {
+                get
+                {
+                    return this.Object.Position;
+                }
+            }
+
+            #endregion
         }
     }
 }
